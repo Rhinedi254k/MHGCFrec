@@ -32,7 +32,7 @@ parser.add_argument("--user_layer1_nei_num", default=10, type=int)
 parser.add_argument("--vgaean_lambda", default=0.3, type=int)
 parser.add_argument("--vgaean_beta", default=0.2, type=int)
 
-#################################evaluation############################################
+#--------evaluation
 def metrics(model, test_dataloader):
     recall_sum, ndcg_sum = 0, 0
     label_lst, pred_lst = [], []
@@ -98,10 +98,9 @@ def metrics(model, test_dataloader):
     avg_ndcg = ndcg_sum / count if count > 0 else 0
 
     return avg_recall, avg_ndcg, label_lst, pred_lst
-###########################################################################
 
 
-def get_data_list(ftrain, batch_size):  #完整训练测试数据
+def get_data_list(ftrain, batch_size):  
     f = open(ftrain, 'r')
     train_list = []
     for eachline in f:
@@ -112,7 +111,6 @@ def get_data_list(ftrain, batch_size):  #完整训练测试数据
     return num_batches_per_epoch, train_list
 
 def get_batch_instances(train_list, user_feature_dict, poi_feature_dict, poi_location_dict, batch_size, user_nei_dict, poi_nei_dict, shuffle=True):
-    #是否打乱数据，再用yield分块送入
     num_batches_per_epoch = int((len(train_list) - 1) / batch_size) + 1
     def data_generator(train_list):
         data_size = len(train_list)
@@ -150,31 +148,31 @@ def get_batch_instances(train_list, user_feature_dict, poi_feature_dict, poi_loc
             u_onehop_cate = np.zeros([current_batch_size, user_layer1_nei_num, max_user_cate_size], dtype=int)
 
             for index, each_i in enumerate(i):
-                p_self_cate[index] = poi_feature_arr[each_i]    #poi_self_cate
+                p_self_cate[index] = poi_feature_arr[each_i]    
 
                 tmp_one_nei = poi_nei_dict[each_i][0]
                 tmp_prob = poi_nei_dict[each_i][1]
-                if len(tmp_one_nei) > poi_layer1_nei_num:  #re-sampling
+                if len(tmp_one_nei) > poi_layer1_nei_num:  
                     tmp_one_nei = np.random.choice(tmp_one_nei, poi_layer1_nei_num, replace=False, p=tmp_prob)
                 elif len(tmp_one_nei) < poi_layer1_nei_num:
                     tmp_one_nei = np.random.choice(tmp_one_nei, poi_layer1_nei_num, replace=True, p=tmp_prob)
                 tmp_one_nei[-1] = each_i
 
-                p_onehop_id[index] = tmp_one_nei    #poi_1_neigh
-                p_onehop_cate[index] = poi_feature_arr[tmp_one_nei]  #poi_1_neigh_cate
+                p_onehop_id[index] = tmp_one_nei   
+                p_onehop_cate[index] = poi_feature_arr[tmp_one_nei]  
 
             for index, each_u in enumerate(u):
-                u_self_cate[index] = user_feature_dict[each_u]  # poi_self_cate
+                u_self_cate[index] = user_feature_dict[each_u]  
 
                 tmp_one_nei = user_nei_dict[each_u][0]
                 tmp_prob = user_nei_dict[each_u][1]
-                if len(tmp_one_nei) > user_layer1_nei_num:  # re-sampling
+                if len(tmp_one_nei) > user_layer1_nei_num: 
                     tmp_one_nei = np.random.choice(tmp_one_nei, user_layer1_nei_num, replace=False, p=tmp_prob)
                 elif len(tmp_one_nei) < user_layer1_nei_num:
                     tmp_one_nei = np.random.choice(tmp_one_nei, user_layer1_nei_num, replace=True, p=tmp_prob)
                 tmp_one_nei[-1] = each_u
 
-                u_onehop_id[index] = tmp_one_nei  # user_1_neigh
+                u_onehop_id[index] = tmp_one_nei  
                 u_onehop_cate[index] = user_feature_arr[tmp_one_nei]  # user_1_neigh_cate
 
             yield ([u, p, l, u_self_cate, u_onehop_id, u_onehop_cate, i_self_cate, i_onehop_id, i_onehop_cate])
