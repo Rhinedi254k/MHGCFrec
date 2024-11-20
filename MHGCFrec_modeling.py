@@ -11,7 +11,6 @@ device = torch.device("cpu")
 
 
 class HGCAN(nn.Module):
-    # Placeholder for Hypergraph Graph Convolution Attention Network (HGCAN)
     def __init__(self, embed_size, attention_size):
         super(HGCAN, self).__init__()
         self.embed_size = embed_size
@@ -53,13 +52,11 @@ class aVGAEAN(nn.Module):
         )
 
     def Q(self, x):
-        # Encoder: generate latent variables (mu, logvar)
         encoded = self.encoder(x)
         mu, logvar = encoded[:, :encoded.shape[1] // 2], encoded[:, encoded.shape[1] // 2:]
         z = self.reparameterize(mu, logvar)
         reconstruction = self.decoder(z)
 
-        # HGCAN
         hgcan_output = self.hgcan(reconstruction)
         disc_output = self.discriminator(hgcan_output)
         return reconstruction, disc_output, mu, logvar
@@ -75,8 +72,7 @@ class aVGAEAN(nn.Module):
         return -(real_loss + fake_loss)
 
 
-class GKNN(nn.Module):
-    # Placeholder for GKNN (Graph Convolutional Network)
+class GKNN(nn.Module)
     def __init__(self, embed_size):
         super(GKNN, self).__init__()
         self.conv_layer = nn.Conv1d(embed_size, embed_size, kernel_size=3, padding=1)
@@ -127,7 +123,6 @@ class DualGNN(torch.nn.Module):
         self.category_embed.weight.data.normal_(0, 0.05)
         self.location_embed = torch.nn.Embedding(self.location_size, self.embed_size)
         self.location_embed.weight.data.normal_(0, 0.05)
-
 
         #--------------------------------------------------
         self.dense_poi_self_biinter = nn.Linear(self.embed_size, self.embed_size)
