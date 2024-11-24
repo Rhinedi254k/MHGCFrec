@@ -1,305 +1,288 @@
+import os, time, argparse
+import numpy as np
+import pickle
 import torch
 import torch.nn as nn
-import torch.nn.init as init
-import torch.nn.functional as F
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from tensorboardX import SummaryWriter
+from collections import OrderedDict
+import json
+from MHGCFrec_modeling import DualGNN
 from torch.autograd import Variable
-
-import numpy as np
-import pandas as pd
-from torch.utils.data import Dataset
 device = torch.device("cpu")
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--lr", default=0.0005, type=float,
+					help="learning rate.")
+parser.add_argument("--dropout", default=0.6, type=float,
+					help="dropout rate.")
+parser.add_argument("--batch_size", default=128, type=int,
+					help="batch size when training.")
+parser.add_argument("--cpu", default="0", type=str,
+					help="cpu card ID.")
+parser.add_argument("--epochs", default=200, type=str,
+					help="training epoches.")
+parser.add_argument("--clip_norm", default=5.0, type=float,
+					help="clip norm for preventing gradient exploding.")
+parser.add_argument("--embed_size", default=128, type=int, help="embedding size for users and pois.")
+parser.add_argument("--attention_size", default=50, type=int, help="embedding size for users and pois.")
+parser.add_argument("--poi_layer1_nei_num", default=10, type=int)
+parser.add_argument("--user_layer1_nei_num", default=10, type=int)
+parser.add_argument("--vgaean_lambda", default=0.3, type=int)
+parser.add_argument("--vgaean_beta", default=0.2, type=int)
 
-class HGCAN(nn.Module):
-    # Placeholder for Hypergraph Graph Convolution Attention Network (HGCAN)
-    def __init__(self, embed_size, attention_size):
-        super(HGCAN, self).__init__()
-        self.embed_size = embed_size
-        self.attention_size = attention_size
-        self.attention_layer = nn.Linear(embed_size, attention_size)
-        self.graph_conv_layer = nn.Linear(embed_size, embed_size)
+#################################evaluation############################################
+def metrics(model, test_dataloader):
+    recall_sum, ndcg_sum = 0, 0
+    label_lst, pred_lst = [], []
+    count = 0
+    for batch_data in test_dataloader:
+        # Load batch data
+        user = torch.LongTensor(batch_data[0]).to(device)
+        poi = torch.LongTensor(batch_data[1]).to(device)
+        label = torch.FloatTensor(batch_data[2]).to(device)
+        user_self_cate = torch.LongTensor(batch_data[3]).to(device)
+        user_onehop_id = torch.LongTensor(batch_data[4]).to(device)
+        user_onehop_cate = torch.LongTensor(batch_data[5]).to(device)
+        poi_self_cate, poi_self_location = torch.LongTensor(
+            batch_data[6])[:, 0:6].to(device), torch.LongTensor(batch_data[6])[:, 15:].to(device)
+        poi_onehop_id = torch.LongTensor(batch_data[7]).to(device)
+        poi_onehop_cate, poi_onehop_location = torch.LongTensor(
+            batch_data[8])[:, :, 0:6].to(device), torch.LongTensor(
+            batch_data[8])[:, :, 15:].to(device)
 
-    def forward(self, x):
-        # This will perform the HGCAN operations, involving attention mechanisms and graph convolutions
-        attention_scores = F.softmax(self.attention_layer(x), dim=-1)
-        output = torch.matmul(attention_scores, x)  # Weighted sum based on attention
-        output = self.graph_conv_layer(output)  # Apply graph convolution
-        return output
-class aVGAEAN(nn.Module):
+        # Model inference
+        recommend, recon_loss, kl_loss, adv_loss = model(user, poi, user_self_cate, user_onehop_id, user_onehop_cate,
+                                                         poi_self_cate, poi_self_location, poi_onehop_id,
+                                                         poi_onehop_cate, poi_onehop_location, mode=mode)
+        recommend = recommend.cpu().data.numpy()
+        label = label.cpu().numpy()
 
-    def __init__(self, embed_size, latent_dim):
-        super(aVGAEAN, self).__init__()
+        # Convert to ranking for top-K metrics
+        recommend_sorted_idx = np.argsort(-recommend, axis=0)  # Descending order
+        label_sorted = np.take(label, recommend_sorted_idx)
 
-        # Generator part - adaptive VGAE
-        self.encoder = nn.Sequential(
-            nn.Linear(embed_size, embed_size),
-            nn.SELU(),
-            nn.Linear(embed_size, latent_dim * 2)  # Latent space (mu, logvar)
-        )
-        self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, embed_size),
-            nn.SELU(),
-            nn.Linear(embed_size, embed_size)
-        )
+        # Calculate Recall@K and NDCG@K
+        for i in range(len(label)):
+            true_relevant = np.where(label[i] > 0)[0]  # Indices of relevant items
+            if len(true_relevant) == 0:
+                continue  # Skip if no relevant items
 
-        self.hgcan = HGCAN(embed_size, attention_size=embed_size)
+            predicted_top_k = recommend_sorted_idx[i][:top_k]
+            hits = len(set(predicted_top_k) & set(true_relevant))
+            recall = hits / min(len(true_relevant), top_k)
 
-        # Discriminator part - based on the encoder-decoder structure
-        self.discriminator = nn.Sequential(
-            nn.Linear(embed_size, 128),
-            nn.SELU(),
-            nn.Linear(128, 1),
-            nn.Sigmoid()
-        )
+            # Calculate DCG
+            dcg = 0.0
+            for rank, idx in enumerate(predicted_top_k):
+                if idx in true_relevant:
+                    dcg += 1 / np.log2(rank + 2)
 
-    def Q(self, x):
-        # Encoder: generate latent variables (mu, logvar)
-        encoded = self.encoder(x)
-        mu, logvar = encoded[:, :encoded.shape[1] // 2], encoded[:, encoded.shape[1] // 2:]
-        z = self.reparameterize(mu, logvar)
-        reconstruction = self.decoder(z)
+            # Calculate IDCG
+            idcg = 0.0
+            for rank in range(min(len(true_relevant), top_k)):
+                idcg += 1 / np.log2(rank + 2)
 
-        # HGCAN
-        hgcan_output = self.hgcan(reconstruction)
-        disc_output = self.discriminator(hgcan_output)
-        return reconstruction, disc_output, mu, logvar
+            ndcg = dcg / idcg if idcg > 0 else 0
 
-    def sample_z(self, mu, logvar):
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        return mu + eps * std
+            recall_sum += recall
+            ndcg_sum += ndcg
+            count += 1
 
-    def adversarial_loss(self, z_real, z_fake):
-        real_loss = torch.mean(torch.log(self.discriminator(z_real) + 1e-8))
-        fake_loss = torch.mean(torch.log(1 - self.discriminator(z_fake) + 1e-8))
-        return -(real_loss + fake_loss)
+        # Store predictions and labels for analysis
+        label_lst.extend(list([float(l) for l in label]))
+        pred_lst.extend(list([float(r) for r in recommend]))
 
+    avg_recall = recall_sum / count if count > 0 else 0
+    avg_ndcg = ndcg_sum / count if count > 0 else 0
 
-class GKNN(nn.Module):
-    # Placeholder for GKNN (Graph Convolutional Network)
-    def __init__(self, embed_size):
-        super(GKNN, self).__init__()
-        self.conv_layer = nn.Conv1d(embed_size, embed_size, kernel_size=3, padding=1)
-
-    def forward(self, x):
-        return F.relu(self.conv_layer(x))
-
-class DualGNN(torch.nn.Module):
-    def __init__(self, user_size, poi_size, gender_size, age_size, occupation_size, category_size, location_size, embed_size, attention_size, dropout):
-        super(DualGNN, self).__init__()
-        self.user_size = user_size
-        self.poi_size = poi_size
-        self.gender_size = gender_size
-        self.age_size = age_size
-        self.occupation_size = occupation_size
-        self.category_size = category_size
-        self.location_size = location_size
-        self.embed_size = embed_size
-        self.dropout = dropout
-        self.attention_size = attention_size
-
-        def init_weights(m):
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform(m.weight)
-                if m.bias is not None:
-                    nn.init.constant(m.bias, 0)
-
-        self.user_embed = torch.nn.Embedding(self.user_size, self.embed_size)
-        self.poi_embed = torch.nn.Embedding(self.poi_size, self.embed_size)
-        nn.init.xavier_uniform(self.user_embed.weight)
-        nn.init.xavier_uniform(self.poi_embed.weight)
-
-        self.user_bias = torch.nn.Embedding(self.user_size, 1)
-        self.poi_bias = torch.nn.Embedding(self.poi_size, 1)
-        nn.init.constant(self.user_bias.weight, 0)
-        nn.init.constant(self.poi_bias.weight, 0)
-
-        self.miu = torch.nn.Parameter(torch.zeros(1), requires_grad=True)
-
-        self.gender_embed = torch.nn.Embedding(self.gender_size, self.embed_size)
-        self.gender_embed.weight.data.normal_(0, 0.05)
-        self.age_embed = torch.nn.Embedding(self.age_size, self.embed_size)
-        self.age_embed.weight.data.normal_(0, 0.05)
-        self.occupation_embed = torch.nn.Embedding(self.occupation_size, self.embed_size)
-        self.occupation_embed.weight.data.normal_(0, 0.05)
-
-        self.category_embed = torch.nn.Embedding(self.category_size, self.embed_size)
-        self.category_embed.weight.data.normal_(0, 0.05)
-        self.location_embed = torch.nn.Embedding(self.location_size, self.embed_size)
-        self.location_embed.weight.data.normal_(0, 0.05)
+    return avg_recall, avg_ndcg, label_lst, pred_lst
+###########################################################################
 
 
-        #--------------------------------------------------
-        self.dense_poi_self_biinter = nn.Linear(self.embed_size, self.embed_size)
-        self.dense_poi_self_siinter = nn.Linear(self.embed_size, self.embed_size)
-        self.dense_poi_onehop_biinter = nn.Linear(self.embed_size, self.embed_size)
-        self.dense_poi_onehop_siinter = nn.Linear(self.embed_size, self.embed_size)
-        self.dense_user_self_biinter = nn.Linear(self.embed_size, self.embed_size)
-        self.dense_user_self_siinter = nn.Linear(self.embed_size, self.embed_size)
-        self.dense_user_onehop_biinter = nn.Linear(self.embed_size, self.embed_size)
-        self.dense_user_onehop_siinter = nn.Linear(self.embed_size, self.embed_size)
-        init_weights(self.dense_poi_self_biinter)
-        init_weights(self.dense_poi_self_siinter)
-        init_weights(self.dense_poi_onehop_biinter)
-        init_weights(self.dense_poi_onehop_siinter)
-        init_weights(self.dense_user_self_biinter)
-        init_weights(self.dense_user_self_siinter)
-        init_weights(self.dense_user_onehop_biinter)
-        init_weights(self.dense_user_onehop_siinter)
+def get_data_list(ftrain, batch_size):  #完整训练测试数据
+    f = open(ftrain, 'r')
+    train_list = []
+    for eachline in f:
+        eachline = eachline.strip().split('\t')
+        u, p, l = int(eachline[0]), int(eachline[1]), float(eachline[2])
+        train_list.append([u, p, l])
+    num_batches_per_epoch = int((len(train_list) - 1) / batch_size) + 1
+    return num_batches_per_epoch, train_list
 
-        self.dense_poi_cate_self = nn.Linear(2 * self.embed_size, self.embed_size)
-        self.dense_poi_cate_hop1 = nn.Linear(2 * self.embed_size, self.embed_size)
-        self.dense_user_cate_self = nn.Linear(2 * self.embed_size, self.embed_size)
-        self.dense_user_cate_hop1 = nn.Linear(2 * self.embed_size, self.embed_size)
-        init_weights(self.dense_poi_cate_self)
-        init_weights(self.dense_poi_cate_hop1)
-        init_weights(self.dense_user_cate_self)
-        init_weights(self.dense_user_cate_hop1)
+def get_batch_instances(train_list, user_feature_dict, poi_feature_dict, poi_location_dict, batch_size, user_nei_dict, poi_nei_dict, shuffle=True):
+    #是否打乱数据，再用yield分块送入
+    num_batches_per_epoch = int((len(train_list) - 1) / batch_size) + 1
+    def data_generator(train_list):
+        data_size = len(train_list)
+        user_feature_arr = np.array(list(user_feature_dict.values()))
+        max_user_cate_size = user_feature_arr.shape[1]
 
-        self.dense_poi_gknn = GKNN(self.embed_size)
-        init_weights(self.dense_poi_gknn)
-        self.dense_poi_gru = nn.GRU(self.embed_size * 2, self.embed_size)
-        init_weights(self.dense_poi_gru)
-        self.dense_user_gknn = GKNN(self.embed_size)
-        init_weights(self.dense_user_gknn)
-        self.dense_user_gru = nn.GRU(self.embed_size * 2, self.embed_size)
+        poi_category_arr = np.array(list(poi_feature_dict.values()))
+        poi_location_arr = np.array(list(poi_location_dict.values()))
 
-        latent_dim = 128  # Example latent dimension, adjust as needed
-        self.user_vgaean = aVGAEAN(embed_size, latent_dim)
-        self.poi_vgaean = aVGAEAN(embed_size, latent_dim)
+        poi_feature_arr = np.concatenate([poi_category_arr, poi_location_arr], axis=1)
+        max_poi_cate_size = poi_feature_arr.shape[1]
 
-        #-------------------------------------------------concat
-        self.FC_pre = nn.GRU(2 * embed_size, 1)
-        init_weights(self.FC_pre)
+        poi_layer1_nei_num = FLAGS.poi_layer1_nei_num
+        user_layer1_nei_num = FLAGS.user_layer1_nei_num
 
-        """# dot
-        self.user_bias = nn.Embedding(self.user_size, 1)
-        self.poi_bias = nn.Embedding(self.poi_size, 1)
-        self.user_bias.weight.data.normal_(0, 0.01)
-        self.poi_bias.weight.data.normal_(0, 0.01)
-        self.bias = torch.nn.Parameter(torch.rand(1), requires_grad=True)
-        self.bias.data.uniform_(0, 0.1)"""
+        if shuffle == True:
+            np.random.shuffle(train_list)
+        train_list = np.array(train_list)
 
-        self.sigmoid = nn.Sigmoid()
-        self.tanh = nn.Tanh()
-        self.selu = nn.SELU()
-        self.leakyrelu = nn.LeakyReLU()
-        self.dropout = nn.Dropout(p=0.2)
+        for batch_num in range(num_batches_per_epoch):
+            start_index = batch_num * batch_size
+            end_index = min((batch_num + 1) * batch_size, data_size)
+            current_batch_size = end_index - start_index
 
-    def feat_interaction(self, feature_embedding, fun_bi, fun_si, dimension):
-        summed_features_emb_square = (torch.sum(feature_embedding, dim=dimension)).pow(2)
-        squared_sum_features_emb = torch.sum(feature_embedding.pow(2), dim=dimension)
-        deep_fm = 0.5 * (summed_features_emb_square - squared_sum_features_emb)
-        deep_fm = self.leakyrelu(fun_bi(deep_fm))
-        bias_fm = self.leakyrelu(fun_si(feature_embedding.sum(dim=dimension)))
-        nfm = deep_fm + bias_fm
-        return nfm
+            u = train_list[start_index: end_index][:, 0].astype(int)
+            p = train_list[start_index: end_index][:, 1].astype(int)
+            l = train_list[start_index: end_index][:, 2]
 
-    def forward(self, user, poi, user_self_cate, user_onehop_id, user_onehop_cate, poi_self_cate, poi_self_location, poi_onehop_id, poi_onehop_cate, poi_onehop_location, mode='train'):
+            p_self_cate = np.zeros([current_batch_size, max_poi_cate_size], dtype=int)
+            p_onehop_id = np.zeros([current_batch_size, poi_layer1_nei_num], dtype=int)
+            p_onehop_cate = np.zeros([current_batch_size, poi_layer1_nei_num, max_poi_cate_size], dtype=int)
 
-        upds_list = user.to(device)
-        spds_list = poi.to(device)
-        if mode == 'train' or mode == 'Warm':
-            user_embedding = self.user_embed(torch.autograd.Variable(upds_list))
-            poi_embedding = self.poi_embed(torch.autograd.Variable(spds_list))
-        if mode == 'Pcold':
-            user_embedding = self.user_embed(torch.autograd.Variable(upds_list))
-        if mode == 'Ucold':
-            poi_embedding = self.poi_embed(torch.autograd.Variable(spds_list))
+            u_self_cate = np.zeros([current_batch_size, max_user_cate_size], dtype=int)
+            u_onehop_id = np.zeros([current_batch_size, user_layer1_nei_num], dtype=int)
+            u_onehop_cate = np.zeros([current_batch_size, user_layer1_nei_num, max_user_cate_size], dtype=int)
 
-        batch_size = poi_self_cate.shape[0]
-        cate_size = poi_self_cate.shape[1]
-        location_size = poi_self_location.shape[1]
-        user_onehop_size = user_onehop_id.shape[1]
-        poi_onehop_size = poi_onehop_id.shape[1]
+            for index, each_p in enumerate(p):
+                p_self_cate[index] = poi_feature_arr[each_p]    #poi_self_cate
 
-        #-----DualGNN-poi
-        # N=2
-        poi_onehop_id = self.poi_embed(Variable(poi_onehop_id))
+                tmp_one_nei = poi_nei_dict[each_p][0]
+                tmp_prob = poi_nei_dict[each_p][1]
+                if len(tmp_one_nei) > poi_layer1_nei_num:  #re-sampling
+                    tmp_one_nei = np.random.choice(tmp_one_nei, poi_layer1_nei_num, replace=False, p=tmp_prob)
+                elif len(tmp_one_nei) < poi_layer1_nei_num:
+                    tmp_one_nei = np.random.choice(tmp_one_nei, poi_layer1_nei_num, replace=True, p=tmp_prob)
+                tmp_one_nei[-1] = each_p
 
-        poi_onehop_cate = self.category_embed(Variable(poi_onehop_cate).view(-1, cate_size)).view(batch_size,poi_onehop_size,cate_size, -1)
-        poi_onehop_location = self.location_embed(Variable(poi_onehop_location).view(-1, location_size)).view(batch_size, poi_onehop_size, location_size, -1)
+                p_onehop_id[index] = tmp_one_nei    #poi_1_neigh
+                p_onehop_cate[index] = poi_feature_arr[tmp_one_nei]  #poi_1_neigh_cate
 
-        poi_onehop_feature = torch.cat([poi_onehop_cate, poi_onehop_location], dim=2)
-        poi_onehop_embed = self.dense_poi_cate_hop1(torch.cat([self.feat_interaction(poi_onehop_feature, self.dense_poi_onehop_biinter,  self.dense_poi_onehop_siinter, dimension=2), poi_onehop_id], dim=-1))
+            for index, each_u in enumerate(u):
+                u_self_cate[index] = user_feature_dict[each_u]  # poi_self_cate
 
-        # N=1
-        poi_self_cate = self.category_embed(Variable(poi_self_cate))
-        poi_self_location = self.location_embed(Variable(poi_self_location))
+                tmp_one_nei = user_nei_dict[each_u][0]
+                tmp_prob = user_nei_dict[each_u][1]
+                if len(tmp_one_nei) > user_layer1_nei_num:  # re-sampling
+                    tmp_one_nei = np.random.choice(tmp_one_nei, user_layer1_nei_num, replace=False, p=tmp_prob)
+                elif len(tmp_one_nei) < user_layer1_nei_num:
+                    tmp_one_nei = np.random.choice(tmp_one_nei, user_layer1_nei_num, replace=True, p=tmp_prob)
+                tmp_one_nei[-1] = each_u
 
-        poi_self_feature = torch.cat([poi_self_cate, poi_self_location], dim=1)
-        poi_self_feature = self.feat_interaction(poi_self_feature, self.dense_poi_self_biinter, self.dense_poi_self_siinter, dimension=1)
+                u_onehop_id[index] = tmp_one_nei  # user_1_neigh
+                u_onehop_cate[index] = user_feature_arr[tmp_one_nei]  # user_1_neigh_cate
 
-        if mode == 'Pcold':
-            poi_mu, poi_var = self.poi_vgaean.Q(poi_self_feature)
-            poi_z = self.poi_vgaean.sample_z(poi_mu, poi_var)
-            poi_embedding = self.poi_vgaean.P(poi_z)
-        poi_self_embed = self.dense_poi_cate_self(torch.cat([poi_self_feature, poi_embedding], dim=-1))
+            yield ([u, p, l, u_self_cate, u_onehop_id, u_onehop_cate, p_self_cate, p_onehop_id, p_onehop_cate])
+    return data_generator(train_list)
 
-        poi_gknn = self.sigmoid(self.dense_poi_gknn(torch.cat([poi_self_embed.unsqueeze(1).repeat(1, poi_onehop_size, 1), poi_onehop_embed], dim=-1)))  # 商品的邻居门，控制邻居信息多少作为输入
-        poi_gru = self.sigmoid(self.dense_poi_gru(torch.cat([poi_self_embed, poi_onehop_embed.mean(dim=1)], dim=-1)))
-        poi_onehop_embed_final = (poi_onehop_embed * poi_gknn).mean(1)
-        poi_self_embed = (1 - poi_gru) * poi_self_embed
+if __name__ == '__main__':
+    #poi cold start
+    f_info = '.../dataset/NYC/UPinformation.pkl'
+    f_neighbor = '../dataset/NYC/neighbour_Pcold.pkl'
+    f_train = '../NYC/Pcold_train.dat'
+    f_test = '../dataset/NYC/Pcold_val.dat'
+    f_model = '../dataset/NYC/MHGCFrec_Pcold_'
+    mode = 'Pcold'
 
-        poi_dualgnn_embed = self.leakyrelu(poi_self_embed + poi_onehop_embed_final)  # [batch, embed]
+    """# user cold start
+    f_info = '../NYC/UPinformation.pkl'
+    f_neighbor = '../dataset/NYC/neighbor_Ucold.pkl'
+    f_train = '../dataset/NYC/Ucold_train.dat'
+    f_test = '../dataset/NYC/Ucold_val.dat'
+    f_model = '../dataset/NYC/MHGCFrec_Ucold_'
+    mode = 'Ucold'"""
 
-        #-----DualGNN-user
-        # N=2
-        user_onehop_id = self.user_embed(Variable(user_onehop_id))
+    """# warm start
+    f_info = '../dataset/NYC/UPinformation.pkl'
+    f_neighbor = '../dataset/NYC/neighbor_Warm.pkl'
+    f_train = '../dataset/NYC/Warm_train.dat'
+    f_test = '../dataset/NYC/Warm_val.dat'
+    f_model = '../dataset/NYC/MHGCFrec_Warm_'
+    mode = 'Warm'"""
 
-        user_onehop_gender_emb = self.gender_embed(Variable(user_onehop_cate[:, :, 0]))
-        user_onehop_age_emb = self.age_embed(Variable(user_onehop_cate[:, :, 1]))
-        user_onehop_occupation_emb = self.occupation_embed(Variable(user_onehop_cate[:, :, 2]))
 
-        user_onehop_feat = torch.cat([user_onehop_gender_emb.unsqueeze(2), user_onehop_age_emb.unsqueeze(2), user_onehop_occupation_emb.unsqueeze(2)], dim=2)
-        user_onehop_embed = self.dense_user_cate_hop1(torch.cat([self.feat_interaction(user_onehop_feat, self.dense_user_onehop_biinter, self.dense_user_onehop_siinter, dimension=2), user_onehop_id], dim=-1))
+    FLAGS = parser.parse_args()
+    print("\nParameters:")
+    print(FLAGS.__dict__)
 
-        # N=1
-        user_gender_emb = self.gender_embed(Variable(user_self_cate[:, 0]))
-        user_age_emb = self.age_embed(Variable(user_self_cate[:, 1]))
-        user_occupation_emb = self.occupation_embed(Variable(user_self_cate[:, 2]))
+    with open(f_neighbor, 'rb') as f:
+        neighbor_dict = pickle.load(f)
+    print(type(neighbor_dict))  # This should print <class 'dict'>
+    print(neighbor_dict)  # This will print the entire content to verify it
+    user_nei_dict = neighbor_dict['user_nei_dict']
+    poi_nei_dict = neighbor_dict['poi_nei_dict']
+    location_num = neighbor_dict['location_num']
 
-        user_self_feature = torch.cat([user_gender_emb.unsqueeze(1), user_age_emb.unsqueeze(1), user_occupation_emb.unsqueeze(1)], dim=1)
-        user_self_feature = self.feat_interaction(user_self_feature, self.dense_user_self_biinter,  self.dense_user_onehop_siinter, dimension=1)
+    poi_location_dict = neighbor_dict['poi_location_dict']
 
-        if mode == 'Ucold':
-            user_mu, user_var = self.user_vgaean.Q(user_self_feature)
-            user_z = self.user_vgaean.sample_z(user_mu, user_var)
-            user_embedding = self.user_vgaean.P(user_z)
-        user_self_embed = self.dense_user_cate_self(torch.cat([user_self_feature, user_embedding], dim=-1))
+    with open(f_info, 'rb') as f:
+        poi_info = pickle.load(f)
+    user_num = poi_info['user_num']
+    poi_num = poi_info['poi_num']
+    gender_num = poi_info['gender_num']
+    age_num = poi_info['age_num']
+    occupation_num = poi_info['occupation_num']
+    category_num = poi_info['category_num']
+    user_feature_dict = poi_info['user_feature_dict']
+    poi_feature_dict = poi_info['poi_feature_dict']
 
-        user_gknn = self.sigmoid(self.dense_user_gknn(torch.cat([user_self_embed.unsqueeze(1).repeat(1, user_onehop_size, 1), user_onehop_embed],dim=-1)))
-        user_gru = self.sigmoid(self.dense_user_gru(torch.cat([user_self_embed, user_onehop_embed.mean(dim=1)], dim=-1)))
-        user_onehop_embed_final = (user_onehop_embed * user_gknn).mean(dim=1)
-        user_self_embed = (1 - user_gru) * user_self_embed
+    print("user_num {}, poi_num {}, gender_num {}, age_num {}, occupation_num {}, category_num {}, location_num {}, mode {} ".format(user_num, poi_num, gender_num, age_num, occupation_num, category_num, location_num, mode))
 
-        user_dualgnn_embed = self.leakyrelu(user_self_embed + user_onehop_embed_final)
+    train_steps, train_list = get_data_list(f_train, batch_size=FLAGS.batch_size)
+    test_steps, test_list = get_data_list(f_test, batch_size=FLAGS.batch_size)
 
-        #--------------------------------------------------norm
-        poi_mu, poi_var = self.poi_vgaean.Q(poi_self_feature)
-        poi_z = self.poi_vgaean.sample_z(poi_mu, poi_var)
-        poi_preference_sample = self.poi_vgaean.P(poi_z)
+    model = DualGNN(user_num, poi_num, gender_num, age_num, occupation_num, category_num, location_num, FLAGS.embed_size, FLAGS.attention_size, FLAGS.dropout)
+    model.to(device)
 
-        user_mu, user_var = self.user_vgaean.Q(user_self_feature)
-        user_z = self.user_vgaean.sample_z(user_mu, user_var)
-        user_preference_sample = self.user_vgaean.P(user_z)
+    loss_function = torch.nn.MSELoss(size_average=False)
+    optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=FLAGS.lr, weight_decay=0.001)
 
-        recon_loss = torch.norm(poi_preference_sample - poi_embedding) + torch.norm(user_preference_sample - user_embedding)
-        kl_loss = torch.mean(0.5 * torch.sum(torch.exp(poi_z) + poi_mu ** 2 - 1. - poi_var, 1)) + \
-                  torch.mean(0.5 * torch.sum(torch.exp(user_z) + user_mu ** 2 - 1. - user_var, 1))
-        adv_loss = adversarial_loss(user_z, poi_z)
+    writer = SummaryWriter()  # For visualization
+    #f_loss_curve = open('tmp_loss_curve.txt', 'w')
+    best_recall_sum = 5
 
-        #------Recommendation
-    def user_trust_score(self, user_i, user_j):
-        emb_i = user_dualgnn_embed[user_i]
-        emb_j = user_dualgnn_embed[user_j]
-        trust_score = np.dot(emb_i, emb_j) / (np.linalg.norm(emb_i) * np.linalg.norm(emb_j))
-        return trust_score
+    count = 0
+    for epoch in range(FLAGS.epochs):
+        model.train()  # Enable dropout (if have).
+        start_time = time.time()
+        train_dataloader = get_batch_instances(train_list, user_feature_dict, poi_feature_dict, poi_location_dict,  batch_size=FLAGS.batch_size, user_nei_dict=user_nei_dict, poi_nei_dict=poi_nei_dict, shuffle=True)
 
-        #concat
-        bu = self.user_bias(Variable(upds_list))
-        bp = self.poi_bias(Variable(sids_list))
-        tmp = torch.cat([user_dualgnn_embed, poi_dualgnn_embed], dim=1)
-        rec = self.FC_pre(tmp) + (user_dualgnn_embed * poi_dualgnn_embed).trust_score.sum(1, keepdim=True) + bu + bp + (self.miu).repeat(batch_size, 1)
+        for idx, batch_data in enumerate(train_dataloader):
+            user = torch.LongTensor(batch_data[0]).to(device)
+            poi = torch.LongTensor(batch_data[1]).to(device)
+            label = torch.FloatTensor(batch_data[2]).to(device)
+            user_self_cate = torch.LongTensor(batch_data[3]).to(device)
+            user_onehop_id = torch.LongTensor(batch_data[4]).to(device)
+            user_onehop_cate = torch.LongTensor(batch_data[5]).to(device)
+            poi_self_cate, poi_self_location = torch.LongTensor(batch_data[6])[:, 0:6].to(device), torch.LongTensor(batch_data[6])[:, 15:].to(device)
+            poi_onehop_id = torch.LongTensor(batch_data[7]).to(device)
+            poi_onehop_cate, poi_onehop_location = torch.LongTensor(batch_data[8])[:, :, 0:6].to(device), torch.LongTensor(batch_data[8])[:, :, 15:].to(device)
 
-        return rec.squeeze(), recon_loss, kl_loss, adv_loss
+            model.zero_grad()
+            recommend, recon_loss, kl_loss = model(user, poi, user_self_cate, user_onehop_id, user_onehop_cate, poi_self_cate, poi_self_location, poi_onehop_id, poi_onehop_cate, poi_onehop_location, mode='train')
+
+            label = Variable(label)
+
+            main_loss = loss_function(recommend, label)
+            loss = main_loss + FLAGS.vgaean_lambda * (recon_loss + kl_loss) + FLAGS.vgaean_beta * adv_loss
+
+            loss.backward()
+
+            optimizer.step()
+            writer.add_scalar('data/loss', loss.data, count)
+            count += 1
+
+        tmploss = torch.sqrt(loss / FLAGS.batch_size)
+        print(50 * '#')
+        print('epoch: ', epoch, '     ', tmploss.detach())
+
+        model.eval()
+        print('time = ', time.time() - start_time)
+        test_dataloader = get_batch_instances(test_list, user_feature_dict, poi_feature_dict, poi_location_dict, batch_size=FLAGS.batch_size, user_nei_dict=user_nei_dict, poi_nei_dict=poi_nei_dict, shuffle=False)
+        recall_sum, ndcg_sum, label_lst, rec_lst = metrics(model, test_dataloader)
+        print('test recall_sum,ndcg_sum: ', recall_sum,ndcg_sum)
