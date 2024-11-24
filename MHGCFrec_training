@@ -112,7 +112,6 @@ def get_data_list(ftrain, batch_size):  #Full training test data
     return num_batches_per_epoch, train_list
 
 def get_batch_instances(train_list, user_feature_dict, poi_feature_dict, poi_location_dict, batch_size, user_nei_dict, poi_nei_dict, shuffle=True):
-    #是否打乱数据，再用yield分块送入
     num_batches_per_epoch = int((len(train_list) - 1) / batch_size) + 1
     def data_generator(train_list):
         data_size = len(train_list)
