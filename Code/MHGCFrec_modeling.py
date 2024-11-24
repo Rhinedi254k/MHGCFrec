@@ -11,6 +11,7 @@ device = torch.device("cpu")
 
 
 class HGCAN(nn.Module):
+    # Placeholder for Hypergraph Graph Convolution Attention Network (HGCAN)
     def __init__(self, embed_size, attention_size):
         super(HGCAN, self).__init__()
         self.embed_size = embed_size
@@ -52,11 +53,13 @@ class aVGAEAN(nn.Module):
         )
 
     def Q(self, x):
+        # Encoder: generate latent variables (mu, logvar)
         encoded = self.encoder(x)
         mu, logvar = encoded[:, :encoded.shape[1] // 2], encoded[:, encoded.shape[1] // 2:]
         z = self.reparameterize(mu, logvar)
         reconstruction = self.decoder(z)
 
+        # HGCAN
         hgcan_output = self.hgcan(reconstruction)
         disc_output = self.discriminator(hgcan_output)
         return reconstruction, disc_output, mu, logvar
@@ -72,7 +75,8 @@ class aVGAEAN(nn.Module):
         return -(real_loss + fake_loss)
 
 
-class GKNN(nn.Module)
+class GKNN(nn.Module):
+    # Placeholder for GKNN (Graph Convolutional Network)
     def __init__(self, embed_size):
         super(GKNN, self).__init__()
         self.conv_layer = nn.Conv1d(embed_size, embed_size, kernel_size=3, padding=1)
@@ -124,6 +128,7 @@ class DualGNN(torch.nn.Module):
         self.location_embed = torch.nn.Embedding(self.location_size, self.embed_size)
         self.location_embed.weight.data.normal_(0, 0.05)
 
+
         #--------------------------------------------------
         self.dense_poi_self_biinter = nn.Linear(self.embed_size, self.embed_size)
         self.dense_poi_self_siinter = nn.Linear(self.embed_size, self.embed_size)
@@ -151,16 +156,17 @@ class DualGNN(torch.nn.Module):
         init_weights(self.dense_user_cate_self)
         init_weights(self.dense_user_cate_hop1)
 
-        self.dense_poi_gknn = GKNN(self.embed_size * 3, self.embed_size)
+        self.dense_poi_gknn = GKNN(self.embed_size)
         init_weights(self.dense_poi_gknn)
         self.dense_poi_gru = nn.GRU(self.embed_size * 2, self.embed_size)
         init_weights(self.dense_poi_gru)
-        self.dense_user_gknn = GKNN(self.embed_size * 2, self.embed_size)
+        self.dense_user_gknn = GKNN(self.embed_size)
         init_weights(self.dense_user_gknn)
         self.dense_user_gru = nn.GRU(self.embed_size * 2, self.embed_size)
 
-        self.user_vgaean = aVGAEAN(embed_size)
-        self.poi_vgaean = aVGAEAN(embed_size)
+        latent_dim = 128  # Example latent dimension, adjust as needed
+        self.user_vgaean = aVGAEAN(embed_size, latent_dim)
+        self.poi_vgaean = aVGAEAN(embed_size, latent_dim)
 
         #-------------------------------------------------concat
         self.FC_pre = nn.GRU(2 * embed_size, 1)
