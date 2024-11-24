@@ -236,7 +236,7 @@ class DualGNN(torch.nn.Module):
             poi_embedding = self.poi_vgaean.P(poi_z)
         poi_self_embed = self.dense_poi_cate_self(torch.cat([poi_self_feature, poi_embedding], dim=-1))
 
-        poi_gknn = self.sigmoid(self.dense_poi_gknn(torch.cat([poi_self_embed.unsqueeze(1).repeat(1, poi_onehop_size, 1), poi_onehop_embed], dim=-1)))  # 商品的邻居门，控制邻居信息多少作为输入
+        poi_gknn = self.sigmoid(self.dense_poi_gknn(torch.cat([poi_self_embed.unsqueeze(1).repeat(1, poi_onehop_size, 1), poi_onehop_embed], dim=-1))) 
         poi_gru = self.sigmoid(self.dense_poi_gru(torch.cat([poi_self_embed, poi_onehop_embed.mean(dim=1)], dim=-1)))
         poi_onehop_embed_final = (poi_onehop_embed * poi_gknn).mean(1)
         poi_self_embed = (1 - poi_gru) * poi_self_embed
