@@ -57,6 +57,7 @@ def metrics(model, test_dataloader):
                                                          poi_self_cate, poi_self_location, poi_onehop_id,
                                                          poi_onehop_cate, poi_onehop_location, mode=mode)
         recommend = recommend.cpu().data.numpy()
+        recommend = recommend.reshape(recommend.shape[0])
         label = label.cpu().numpy()
 
         # Convert to ranking for top-K metrics
@@ -101,7 +102,7 @@ def metrics(model, test_dataloader):
 ###########################################################################
 
 
-def get_data_list(ftrain, batch_size):  #Full training test data
+def get_data_list(ftrain, batch_size):
     f = open(ftrain, 'r')
     train_list = []
     for eachline in f:
