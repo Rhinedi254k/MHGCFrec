@@ -11,7 +11,6 @@ device = torch.device("cpu")
 
 
 class HGCAN(nn.Module):
-    # Placeholder for Hypergraph Graph Convolution Attention Network (HGCAN)
     def __init__(self, embed_size, attention_size):
         super(HGCAN, self).__init__()
         self.embed_size = embed_size
@@ -20,10 +19,11 @@ class HGCAN(nn.Module):
         self.graph_conv_layer = nn.Linear(embed_size, embed_size)
 
     def forward(self, x):
-        # This will perform the HGCAN operations, involving attention mechanisms and graph convolutions
-        attention_scores = F.softmax(self.attention_layer(x), dim=-1)
-        output = torch.matmul(attention_scores, x)  # Weighted sum based on attention
-        output = self.graph_conv_layer(output)  # Apply graph convolution
+        batch_size = x.size(0)
+        attention_scores = F.softmax(self.attention_layer(x), dim=-1)  
+        attention_scores = attention_scores.view(batch_size, -1)
+        output = torch.matmul(attention_scores, x)  
+        output = self.graph_conv_layer(output) 
         return output
 class aVGAEAN(nn.Module):
 
@@ -52,6 +52,11 @@ class aVGAEAN(nn.Module):
             nn.Sigmoid()
         )
 
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)  # Standard deviation
+        eps = torch.randn_like(std)    # Random noise
+        return mu + eps * std
+
     def Q(self, x):
         # Encoder: generate latent variables (mu, logvar)
         encoded = self.encoder(x)
@@ -65,9 +70,11 @@ class aVGAEAN(nn.Module):
         return reconstruction, disc_output, mu, logvar
 
     def sample_z(self, mu, logvar):
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        return mu + eps * std
+        return self.reparameterize(mu, logvar)
+
+    def P(self, z):
+        reconstruction = self.decoder(z)
+        return reconstruction
 
     def adversarial_loss(self, z_real, z_fake):
         real_loss = torch.mean(torch.log(self.discriminator(z_real) + 1e-8))
@@ -164,7 +171,7 @@ class DualGNN(torch.nn.Module):
         init_weights(self.dense_user_gknn)
         self.dense_user_gru = nn.GRU(self.embed_size * 2, self.embed_size)
 
-        latent_dim = 128  # Example latent dimension, adjust as needed
+        latent_dim = 30 
         self.user_vgaean = aVGAEAN(embed_size, latent_dim)
         self.poi_vgaean = aVGAEAN(embed_size, latent_dim)
 
