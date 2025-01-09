@@ -19,12 +19,12 @@ class HGCAN(nn.Module):
         self.graph_conv_layer = nn.Linear(embed_size, embed_size)
 
     def forward(self, x):
-        batch_size = x.size(0)
-        attention_scores = F.softmax(self.attention_layer(x), dim=-1)  
+        batch_size, seq_len, embed_dim = x.size()
+        attention_scores = F.softmax(self.attention_layer(x), dim=1)  
         attention_scores = attention_scores.view(batch_size, -1)
-        output = torch.matmul(attention_scores, x)  
+        output = torch.bmm(attention_scores.permute(0, 2, 1), x) 
         output = self.graph_conv_layer(output) 
-        return output
+        return output.squeeze(1)
 class aVGAEAN(nn.Module):
 
     def __init__(self, embed_size, latent_dim):
@@ -83,12 +83,12 @@ class aVGAEAN(nn.Module):
 
 
 class GKNN(nn.Module):
-    # Placeholder for GKNN (Graph Convolutional Network)
     def __init__(self, embed_size):
         super(GKNN, self).__init__()
         self.conv_layer = nn.Conv1d(embed_size, embed_size, kernel_size=3, padding=1)
 
     def forward(self, x):
+        assert len(x.shape) == 3, "Input to GKNN must have shape (batch_size, embed_size, sequence_length)"
         return F.relu(self.conv_layer(x))
 
 class DualGNN(torch.nn.Module):
