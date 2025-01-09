@@ -20,10 +20,9 @@ class HGCAN(nn.Module):
 
     def forward(self, x):
         batch_size, seq_len, embed_dim = x.size()
-        attention_scores = F.softmax(self.attention_layer(x), dim=1)  
-        attention_scores = attention_scores.view(batch_size, -1)
-        output = torch.bmm(attention_scores.permute(0, 2, 1), x) 
-        output = self.graph_conv_layer(output) 
+        attention_scores = F.softmax(self.attention_layer(x), dim=-1)
+        output = torch.bmm(attention_scores.transpose(1, 2), x)
+        output = self.graph_conv_layer(output)
         return output.squeeze(1)
 class aVGAEAN(nn.Module):
 
@@ -65,7 +64,7 @@ class aVGAEAN(nn.Module):
         reconstruction = self.decoder(z)
 
         # HGCAN
-        hgcan_output = self.hgcan(reconstruction)
+        hgcan_output = self.hgcan(reconstruction.unsqueeze(1))
         disc_output = self.discriminator(hgcan_output)
         return reconstruction, disc_output, mu, logvar
 
@@ -88,8 +87,9 @@ class GKNN(nn.Module):
         self.conv_layer = nn.Conv1d(embed_size, embed_size, kernel_size=3, padding=1)
 
     def forward(self, x):
-        assert len(x.shape) == 3, "Input to GKNN must have shape (batch_size, embed_size, sequence_length)"
-        return F.relu(self.conv_layer(x))
+        if x.dim() == 3:
+            x = x.transpose(1, 2)  # Convert to [batch, channels, length]
+        return F.relu(self.conv_layer(x)).transpose(1, 2)
 
 class DualGNN(torch.nn.Module):
     def __init__(self, user_size, poi_size, gender_size, age_size, occupation_size, category_size, location_size, embed_size, attention_size, dropout):
@@ -163,11 +163,11 @@ class DualGNN(torch.nn.Module):
         init_weights(self.dense_user_cate_self)
         init_weights(self.dense_user_cate_hop1)
 
-        self.dense_poi_gknn = GKNN(self.embed_size)
+        self.dense_poi_gknn = GKNN(self.embed_size * 2)
         init_weights(self.dense_poi_gknn)
         self.dense_poi_gru = nn.GRU(self.embed_size * 2, self.embed_size)
         init_weights(self.dense_poi_gru)
-        self.dense_user_gknn = GKNN(self.embed_size)
+        self.dense_user_gknn = GKNN(self.embed_size * 2)
         init_weights(self.dense_user_gknn)
         self.dense_user_gru = nn.GRU(self.embed_size * 2, self.embed_size)
 
@@ -176,7 +176,7 @@ class DualGNN(torch.nn.Module):
         self.poi_vgaean = aVGAEAN(embed_size, latent_dim)
 
         #-------------------------------------------------concat
-        self.FC_pre = nn.GRU(2 * embed_size, 1)
+        self.FC_pre = nn.Linear(2 * embed_size, 1)
         init_weights(self.FC_pre)
 
         """# dot
@@ -238,13 +238,16 @@ class DualGNN(torch.nn.Module):
         poi_self_feature = self.feat_interaction(poi_self_feature, self.dense_poi_self_biinter, self.dense_poi_self_siinter, dimension=1)
 
         if mode == 'Pcold':
-            poi_mu, poi_var = self.poi_vgaean.Q(poi_self_feature)
+            _, _, poi_mu, poi_var = self.poi_vgaean.Q(poi_self_feature)
             poi_z = self.poi_vgaean.sample_z(poi_mu, poi_var)
             poi_embedding = self.poi_vgaean.P(poi_z)
         poi_self_embed = self.dense_poi_cate_self(torch.cat([poi_self_feature, poi_embedding], dim=-1))
 
-        poi_gknn = self.sigmoid(self.dense_poi_gknn(torch.cat([poi_self_embed.unsqueeze(1).repeat(1, poi_onehop_size, 1), poi_onehop_embed], dim=-1))) 
-        poi_gru = self.sigmoid(self.dense_poi_gru(torch.cat([poi_self_embed, poi_onehop_embed.mean(dim=1)], dim=-1)))
+        poi_gknn = self.sigmoid(self.dense_poi_gknn(torch.cat([poi_self_embed.unsqueeze(1).repeat(1, poi_onehop_size, 1), poi_onehop_embed], dim=-1)))
+        poi_gknn = poi_gknn[:, :, :self.embed_size]  
+        gru_input_p = torch.cat([poi_self_embed, poi_onehop_embed.mean(dim=1)], dim=-1).unsqueeze(0)
+        gru_output_p, _ = self.dense_poi_gru(gru_input_p)
+        poi_gru = self.sigmoid(gru_output_p.squeeze(0))
         poi_onehop_embed_final = (poi_onehop_embed * poi_gknn).mean(1)
         poi_self_embed = (1 - poi_gru) * poi_self_embed
 
@@ -270,24 +273,27 @@ class DualGNN(torch.nn.Module):
         user_self_feature = self.feat_interaction(user_self_feature, self.dense_user_self_biinter,  self.dense_user_onehop_siinter, dimension=1)
 
         if mode == 'Ucold':
-            user_mu, user_var = self.user_vgaean.Q(user_self_feature)
+           _, _, user_mu, user_var = self.user_vgaean.Q(user_self_feature)
             user_z = self.user_vgaean.sample_z(user_mu, user_var)
             user_embedding = self.user_vgaean.P(user_z)
         user_self_embed = self.dense_user_cate_self(torch.cat([user_self_feature, user_embedding], dim=-1))
 
         user_gknn = self.sigmoid(self.dense_user_gknn(torch.cat([user_self_embed.unsqueeze(1).repeat(1, user_onehop_size, 1), user_onehop_embed],dim=-1)))
-        user_gru = self.sigmoid(self.dense_user_gru(torch.cat([user_self_embed, user_onehop_embed.mean(dim=1)], dim=-1)))
+        user_gknn = user_gknn[:, :, :self.embed_size]  
+        gru_input_u = torch.cat([user_self_embed, user_onehop_embed.mean(dim=1)], dim=-1).unsqueeze(0)
+        gru_output_u, _ = self.dense_poi_gru(gru_input_u)
+        user_gru = self.sigmoid(gru_output_p.squeeze(0))
         user_onehop_embed_final = (user_onehop_embed * user_gknn).mean(dim=1)
         user_self_embed = (1 - user_gru) * user_self_embed
 
         user_dualgnn_embed = self.leakyrelu(user_self_embed + user_onehop_embed_final)
 
         #--------------------------------------------------norm
-        poi_mu, poi_var = self.poi_vgaean.Q(poi_self_feature)
+        _, _, poi_mu, poi_var = self.poi_vgaean.Q(poi_self_feature)
         poi_z = self.poi_vgaean.sample_z(poi_mu, poi_var)
         poi_preference_sample = self.poi_vgaean.P(poi_z)
 
-        user_mu, user_var = self.user_vgaean.Q(user_self_feature)
+        _, _, user_mu, user_var = self.user_vgaean.Q(user_self_feature)
         user_z = self.user_vgaean.sample_z(user_mu, user_var)
         user_preference_sample = self.user_vgaean.P(user_z)
 
