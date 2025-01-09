@@ -300,7 +300,7 @@ class DualGNN(torch.nn.Module):
         recon_loss = torch.norm(poi_preference_sample - poi_embedding) + torch.norm(user_preference_sample - user_embedding)
         kl_loss = torch.mean(0.5 * torch.sum(torch.exp(poi_z) + poi_mu ** 2 - 1. - poi_var, 1)) + \
                   torch.mean(0.5 * torch.sum(torch.exp(user_z) + user_mu ** 2 - 1. - user_var, 1))
-        adv_loss = adversarial_loss(user_z, poi_z)
+        adv_loss = self.poi_vgaean.adversarial_loss(user_z, poi_z)
 
         #------Recommendation
     def user_trust_score(self, user_i, user_j):
