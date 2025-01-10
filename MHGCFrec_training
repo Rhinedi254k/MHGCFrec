@@ -182,9 +182,9 @@ def get_batch_instances(train_list, user_feature_dict, poi_feature_dict, poi_loc
 
 if __name__ == '__main__':
     #poi cold start
-    f_info = '.../dataset/NYC/UPinformation.pkl'
-    f_neighbor = '../dataset/NYC/neighbour_Pcold.pkl'
-    f_train = '../NYC/Pcold_train.dat'
+    f_info = '../dataset/NYC/UP_cont.pkl'
+    f_neighbor = '../dataset/NYC/neighbor_Pcold.pkl'
+    f_train = '../dataset/NYC/Pcold_train.dat'
     f_test = '../dataset/NYC/Pcold_val.dat'
     f_model = '../dataset/NYC/MHGCFrec_Pcold_'
     mode = 'Pcold'
@@ -264,7 +264,7 @@ if __name__ == '__main__':
             poi_onehop_cate, poi_onehop_location = torch.LongTensor(batch_data[8])[:, :, 0:6].to(device), torch.LongTensor(batch_data[8])[:, :, 15:].to(device)
 
             model.zero_grad()
-            recommend, recon_loss, kl_loss， adv_loss = model(user, poi, user_self_cate, user_onehop_id, user_onehop_cate, poi_self_cate, poi_self_location, poi_onehop_id, poi_onehop_cate, poi_onehop_location, mode='train')
+            recommend, recon_loss, kl_loss, adv_loss = model(user, poi, user_self_cate, user_onehop_id, user_onehop_cate, poi_self_cate, poi_self_location, poi_onehop_id, poi_onehop_cate, poi_onehop_location, mode='train')
 
             label = Variable(label)
 
