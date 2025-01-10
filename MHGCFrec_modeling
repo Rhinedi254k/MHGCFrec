@@ -171,7 +171,7 @@ class DualGNN(torch.nn.Module):
         init_weights(self.dense_user_gknn)
         self.dense_user_gru = nn.GRU(self.embed_size * 2, self.embed_size)
 
-        latent_dim = 30 
+        latent_dim = 30
         self.user_vgaean = aVGAEAN(embed_size, latent_dim)
         self.poi_vgaean = aVGAEAN(embed_size, latent_dim)
 
@@ -192,6 +192,11 @@ class DualGNN(torch.nn.Module):
         self.selu = nn.SELU()
         self.leakyrelu = nn.LeakyReLU()
         self.dropout = nn.Dropout(p=0.2)
+
+    def user_trust_score(self, emb_i, emb_j):
+        # Compute cosine similarity between embeddings
+        trust_score = torch.sum(emb_i * emb_j, dim=-1) / (torch.norm(emb_i, dim=-1) * torch.norm(emb_j, dim=-1) + 1e-8)
+        return trust_score
 
     def feat_interaction(self, feature_embedding, fun_bi, fun_si, dimension):
         summed_features_emb_square = (torch.sum(feature_embedding, dim=dimension)).pow(2)
@@ -244,7 +249,7 @@ class DualGNN(torch.nn.Module):
         poi_self_embed = self.dense_poi_cate_self(torch.cat([poi_self_feature, poi_embedding], dim=-1))
 
         poi_gknn = self.sigmoid(self.dense_poi_gknn(torch.cat([poi_self_embed.unsqueeze(1).repeat(1, poi_onehop_size, 1), poi_onehop_embed], dim=-1)))
-        poi_gknn = poi_gknn[:, :, :self.embed_size]  
+        poi_gknn = poi_gknn[:, :, :self.embed_size]
         gru_input_p = torch.cat([poi_self_embed, poi_onehop_embed.mean(dim=1)], dim=-1).unsqueeze(0)
         gru_output_p, _ = self.dense_poi_gru(gru_input_p)
         poi_gru = self.sigmoid(gru_output_p.squeeze(0))
@@ -274,12 +279,12 @@ class DualGNN(torch.nn.Module):
 
         if mode == 'Ucold':
            _, _, user_mu, user_var = self.user_vgaean.Q(user_self_feature)
-            user_z = self.user_vgaean.sample_z(user_mu, user_var)
-            user_embedding = self.user_vgaean.P(user_z)
+           user_z = self.user_vgaean.sample_z(user_mu, user_var)
+           user_embedding = self.user_vgaean.P(user_z)
         user_self_embed = self.dense_user_cate_self(torch.cat([user_self_feature, user_embedding], dim=-1))
 
         user_gknn = self.sigmoid(self.dense_user_gknn(torch.cat([user_self_embed.unsqueeze(1).repeat(1, user_onehop_size, 1), user_onehop_embed],dim=-1)))
-        user_gknn = user_gknn[:, :, :self.embed_size]  
+        user_gknn = user_gknn[:, :, :self.embed_size]
         gru_input_u = torch.cat([user_self_embed, user_onehop_embed.mean(dim=1)], dim=-1).unsqueeze(0)
         gru_output_u, _ = self.dense_poi_gru(gru_input_u)
         user_gru = self.sigmoid(gru_output_p.squeeze(0))
@@ -303,16 +308,13 @@ class DualGNN(torch.nn.Module):
         adv_loss = self.poi_vgaean.adversarial_loss(user_z, poi_z)
 
         #------Recommendation
-    def user_trust_score(self, user_i, user_j):
-        emb_i = user_dualgnn_embed[user_i]
-        emb_j = user_dualgnn_embed[user_j]
-        trust_score = np.dot(emb_i, emb_j) / (np.linalg.norm(emb_i) * np.linalg.norm(emb_j))
-        return trust_score
 
         #concat
         bu = self.user_bias(Variable(upds_list))
         bp = self.poi_bias(Variable(sids_list))
         tmp = torch.cat([user_dualgnn_embed, poi_dualgnn_embed], dim=1)
+        trust_scores = self.user_trust_score(user_dualgnn_embed, poi_dualgnn_embed)
         rec = self.FC_pre(tmp) + (user_dualgnn_embed * poi_dualgnn_embed).trust_score.sum(1, keepdim=True) + bu + bp + (self.miu).repeat(batch_size, 1)
+        pred += trust_scores.unsqueeze(1)
 
         return rec.squeeze(), recon_loss, kl_loss, adv_loss
