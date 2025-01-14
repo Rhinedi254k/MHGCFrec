@@ -93,7 +93,7 @@ class GKNN(nn.Module):
             x = x.transpose(1, 2)  # Convert to [batch, channels, length]
         return F.relu(self.conv_layer(x)).transpose(1, 2)
 class DualGNN(torch.nn.Module):
-    def __init__(self, user_size, poi_size, gender_size, age_size, occupation_size, category_size, landmark_size, 
+    def __init__(self, user_size, poi_size, gender_size, age_size, occupation_size, category_size, landmark_size,
                  facility_size, rating_size, location_size, embed_size, attention_size, dropout):
         super(DualGNN, self).__init__()
         self.user_size = user_size
@@ -271,8 +271,8 @@ class DualGNN(torch.nn.Module):
             poi_embedding = self.poi_vgaean.P(poi_z)
         poi_self_embed = self.dense_poi_cate_self(torch.cat([poi_self_feature, poi_embedding], dim=-1))
 
-        poi_gknn = self.sigmoid(self.dense_poi_gknn(torch.cat([poi_self_embed.unsqueeze(1).repeat(1, poi_onehop_size, 1), poi_onehop_embed], dim=-1))) 
-        poi_gknn = poi_gknn[:, :, :self.embed_size]  
+        poi_gknn = self.sigmoid(self.dense_poi_gknn(torch.cat([poi_self_embed.unsqueeze(1).repeat(1, poi_onehop_size, 1), poi_onehop_embed], dim=-1)))
+        poi_gknn = poi_gknn[:, :, :self.embed_size]  # Restrict to the first `embed_size` dimensions)
         gru_input = torch.cat([poi_self_embed, poi_onehop_embed.mean(dim=1)], dim=-1).unsqueeze(0)
         gru_output, _ = self.dense_poi_gru(gru_input)
         poi_gru = self.sigmoid(gru_output.squeeze(0))
@@ -290,7 +290,8 @@ class DualGNN(torch.nn.Module):
         user_onehop_age_emb = self.age_embed(Variable(user_onehop_cate[:, :, 1]))
         user_onehop_occupation_emb = self.occupation_embed(Variable(user_onehop_cate[:, :, 2]))
 
-        user_onehop_feat = torch.cat([user_onehop_gender_emb.unsqueeze(2), user_onehop_age_emb.unsqueeze(2), user_onehop_occupation_emb.unsqueeze(2)], dim=2)
+        user_onehop_feat = torch.cat([user_onehop_gender_emb.unsqueeze(2), user_onehop_age_emb.unsqueeze(2),
+                                      user_onehop_occupation_emb.unsqueeze(2)], dim=2)
         user_onehop_embed = self.dense_user_cate_hop1(torch.cat([self.feat_interaction(user_onehop_feat, self.dense_user_onehop_biinter, self.dense_user_onehop_siinter, dimension=2), user_onehop_id], dim=-1))
 
         # N=1
@@ -308,7 +309,7 @@ class DualGNN(torch.nn.Module):
         user_self_embed = self.dense_user_cate_self(torch.cat([user_self_feature, user_embedding], dim=-1))
 
         user_gknn = self.sigmoid(self.dense_user_gknn(torch.cat([user_self_embed.unsqueeze(1).repeat(1, user_onehop_size, 1), user_onehop_embed],dim=-1)))
-        user_gknn = user_gknn[:, :, :self.embed_size]  
+        user_gknn = user_gknn[:, :, :self.embed_size]  # Restrict to the first `embed_size` dimensions
         gru_input_u = torch.cat([user_self_embed, user_onehop_embed.mean(dim=1)], dim=-1).unsqueeze(0)
         gru_output_u, _ = self.dense_user_gru(gru_input_u)
         user_gru = self.sigmoid(gru_output_u.squeeze(0))
