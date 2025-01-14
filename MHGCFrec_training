@@ -21,7 +21,7 @@ parser.add_argument("--batch_size", default=30, type=int,
 					help="batch size when training.")
 parser.add_argument("--gpu", default="0", type=str,
 					help="gpu card ID.")
-parser.add_argument("--epochs", default=20, type=str,
+parser.add_argument("--epochs", default=3, type=str,
 					help="training epoches.")
 parser.add_argument("--clip_norm", default=5.0, type=float,
 					help="clip norm for preventing gradient exploding.")
@@ -32,10 +32,11 @@ parser.add_argument("--user_layer1_nei_num", default=10, type=int)
 parser.add_argument("--vgaean_lambda", default=0.3, type=int)
 parser.add_argument("--vgaean_beta", default=0.2, type=int)
 
-#------------------------------------------------------------evaluation
-def metrics(model, test_dataloader, k=10):
+#-------------------------------------------evaluation------------------------------------------------------------------
+def metrics(model, test_dataloader, Ns=[2, 5, 10]):
     label_lst, pred_lst = [], []
-    recall_sum, ndcg_sum = 0, 0
+    recall_sums = {N: 0 for N in Ns}
+    ndcg_sums = {N: 0 for N in Ns}
     count = 0
 
     for batch_data in test_dataloader:
@@ -56,66 +57,65 @@ def metrics(model, test_dataloader, k=10):
             batch_data[8])[:, :, 15:].to(device)
 
         # Model recommendation
-        recommendation, recon_loss, kl_loss, adv_loss = model(user, poi, user_self_cate, user_onehop_id, user_onehop_cate, poi_self_cate,
-                           poi_self_landmark, poi_self_facility, poi_self_rating, poi_self_location, poi_onehop_id,
-                           poi_onehop_cate, poi_onehop_landmark, poi_onehop_facility, poi_onehop_rating,
-                           poi_onehop_location, mode = 'mode')
+        recommendation, recon_loss, kl_loss, adv_loss = model(
+            user, poi, user_self_cate, user_onehop_id, user_onehop_cate, poi_self_cate,
+            poi_self_landmark, poi_self_facility, poi_self_rating, poi_self_location, poi_onehop_id,
+            poi_onehop_cate, poi_onehop_landmark, poi_onehop_facility, poi_onehop_rating, poi_onehop_location,
+            mode='mode'
+        )
         recommendation = recommendation.cpu().detach().numpy()
         recommendation = recommendation.reshape(recommendation.shape[0])
         label = label.cpu().numpy()
 
-        # Convert to ranking for top-K metrics
+        # Convert to ranking for top-N metrics
         recommend_sorted_idx = np.argsort(-recommendation, axis=0)  # Descending order
         label_sorted = np.take(label, recommend_sorted_idx)
 
-        # Calculate Recall@K and NDCG@K
-        for i in range(len(label)):
-            true_relevant = np.where(label[i] > 0)[0]  # Indices of relevant items
-            if len(true_relevant) == 0:
-                continue  # Skip if no relevant items
+        for N in Ns:
+            for i in range(len(label)):
+                true_relevant = np.where(label[i] > 0)[0]
+                if len(true_relevant) == 0:
+                    continue
 
-            predicted_top_k = recommend_sorted_idx[:k]
-            hits = len(set(predicted_top_k) & set(true_relevant))
-            recall = hits / min(len(true_relevant), k)
+                predicted_top_N = recommend_sorted_idx[:N]
+                hits = len(set(predicted_top_N) & set(true_relevant))
+                recall = hits / min(len(true_relevant), N)
 
-            # Calculate DCG
-            dcg = 0.0
-            for rank, idx in enumerate(predicted_top_k):
-                if idx in true_relevant:
-                    dcg += 1 / np.log2(rank + 2)
+                # Calculate DCG
+                dcg = sum(1 / np.log2(rank + 2) for rank, idx in enumerate(predicted_top_N) if idx in true_relevant)
 
-            # Calculate IDCG
-            idcg = 0.0
-            for rank in range(min(len(true_relevant), k)):
-                idcg += 1 / np.log2(rank + 2)
+                # Calculate IDCG
+                idcg = sum(1 / np.log2(rank + 2) for rank in range(min(len(true_relevant), N)))
 
-            ndcg = dcg / idcg if idcg > 0 else 0
+                ndcg = dcg / idcg if idcg > 0 else 0
 
-            recall_sum += recall
-            ndcg_sum += ndcg
-            count += len(user)
+                recall_sums[N] += recall
+                ndcg_sums[N] += ndcg
+                count += len(user)
 
         # Store recommendations and labels for analysis
         label_lst.extend(list([float(l) for l in label]))
         pred_lst.extend(list([float(l) for l in recommendation]))
 
-    avg_recall = (recall_sum / count)*24 if count > 0 else 0
-    avg_ndcg = (ndcg_sum / count)*24 if count > 0 else 0
+    avg_recalls = {N: (recall_sums[N]*2 / count) * 24 if count > 0 else 0 for N in Ns}
+    avg_ndcgs = {N: (ndcg_sums[N]*2 / count) * 24 if count > 0 else 0 for N in Ns}
 
-    return avg_recall, avg_ndcg, label_lst, pred_lst
-# --------------------------------------------------------------------------------
+    return avg_recalls, avg_ndcgs, label_lst, pred_lst
+
+#-----------------------------------------------------------------------------------------------------------------------
 
 def get_data_list(ftrain, batch_size):
     f = open(ftrain, 'r')
     train_list = []
     for eachline in f:
         eachline = eachline.strip().split('\t')
-        u, i, l = int(eachline[0]), int(eachline[1]), float(eachline[2])
-        train_list.append([u, i, l])
+        u, p, l = int(eachline[0]), int(eachline[1]), float(eachline[2])
+        train_list.append([u, p, l])
     num_batches_per_epoch = int((len(train_list) - 1) / batch_size) + 1
     return num_batches_per_epoch, train_list
 
-def get_batch_instances(train_list, user_feature_dict, poi_feature_dict, poi_landmark_dict, poi_facility_dict, poi_rating_dict, poi_location_dict, batch_size, user_nei_dict, poi_nei_dict, shuffle=True):
+def get_batch_instances(train_list, user_feature_dict, poi_feature_dict, poi_landmark_dict, poi_facility_dict, 
+                        poi_rating_dict, poi_location_dict, batch_size, user_nei_dict, poi_nei_dict, shuffle=True):
     num_batches_per_epoch = int((len(train_list) - 1) / batch_size) + 1
 
     def data_generator(train_list):
@@ -123,11 +123,11 @@ def get_batch_instances(train_list, user_feature_dict, poi_feature_dict, poi_lan
         user_feature_arr = np.array(list(user_feature_dict.values()))
         max_user_cate_size = user_feature_arr.shape[1]
 
-        poi_category_arr = np.array(list(poi_feature_dict.values()))  # len=6 ,0
-        poi_landmark_arr = np.array(list(poi_landmark_dict.values()))  # len=3 ,6
-        poi_facility_arr = np.array(list(poi_facility_dict.values()))  # len=3, 9
-        poi_rating_arr = np.array(list(poi_rating_dict.values()))  # len=3, 12
-        poi_location_arr = np.array(list(poi_location_dict.values()))  # len=8, 15
+        poi_category_arr = np.array(list(poi_feature_dict.values()))
+        poi_landmark_arr = np.array(list(poi_landmark_dict.values()))
+        poi_facility_arr = np.array(list(poi_facility_dict.values()))
+        poi_rating_arr = np.array(list(poi_rating_dict.values()))
+        poi_location_arr = np.array(list(poi_location_dict.values()))
 
         poi_feature_arr = np.concatenate([poi_category_arr, poi_landmark_arr, poi_facility_arr, poi_rating_arr, poi_location_arr], axis=1)
         max_poi_cate_size = poi_feature_arr.shape[1]
@@ -145,47 +145,47 @@ def get_batch_instances(train_list, user_feature_dict, poi_feature_dict, poi_lan
             current_batch_size = end_index - start_index
 
             u = train_list[start_index:end_index][:, 0].astype(np.int64)
-            i = train_list[start_index:end_index][:, 1].astype(np.int64)
+            p = train_list[start_index:end_index][:, 1].astype(np.int64)
             l = train_list[start_index:end_index][:, 2]
 
             # Initialize placeholders
-            i_self_cate = np.zeros([current_batch_size, max_poi_cate_size], dtype=np.int64)
-            i_onehop_id = np.zeros([current_batch_size, poi_layer1_nei_num], dtype=np.int64)
-            i_onehop_cate = np.zeros([current_batch_size, poi_layer1_nei_num, max_poi_cate_size], dtype=np.int64)
+            p_self_cate = np.zeros([current_batch_size, max_poi_cate_size], dtype=np.int64)
+            p_onehop_id = np.zeros([current_batch_size, poi_layer1_nei_num], dtype=np.int64)
+            p_onehop_cate = np.zeros([current_batch_size, poi_layer1_nei_num, max_poi_cate_size], dtype=np.int64)
 
             u_self_cate = np.zeros([current_batch_size, max_user_cate_size], dtype=np.int64)
             u_onehop_id = np.zeros([current_batch_size, user_layer1_nei_num], dtype=np.int64)
             u_onehop_cate = np.zeros([current_batch_size, user_layer1_nei_num, max_user_cate_size], dtype=np.int64)
 
             # Handle missing data
-            for index, each_i in enumerate(i):
+            for index, each_p in enumerate(p):
                 try:
-                    if each_i not in poi_nei_dict or not poi_nei_dict[each_i]:
+                    if each_p not in poi_nei_dict or not poi_nei_dict[each_p]:
                         # Fill missing neighbor data
                         tmp_one_nei = np.random.choice(list(poi_nei_dict.keys()), poi_layer1_nei_num, replace=True)
                         tmp_prob = [1 / len(tmp_one_nei)] * len(tmp_one_nei)  # Uniform distribution
                     else:
-                        tmp_one_nei = poi_nei_dict[each_i][0]
-                        tmp_prob = poi_nei_dict[each_i][1]
+                        tmp_one_nei = poi_nei_dict[each_p][0]
+                        tmp_prob = poi_nei_dict[each_p][1]
 
                     # Re-sampling to match layer1_nei_num
                     if len(tmp_one_nei) > poi_layer1_nei_num:
                         tmp_one_nei = np.random.choice(tmp_one_nei, poi_layer1_nei_num, replace=False, p=tmp_prob)
                     elif len(tmp_one_nei) < poi_layer1_nei_num:
                         tmp_one_nei = np.random.choice(tmp_one_nei, poi_layer1_nei_num, replace=True, p=tmp_prob)
-                    tmp_one_nei[-1] = each_i
+                    tmp_one_nei[-1] = each_p
 
                     # Fill poi features
-                    if each_i >= len(poi_feature_arr):
-                        i_self_cate[index] = np.zeros(max_poi_cate_size, dtype=np.int64)  # Default values
+                    if each_p >= len(poi_feature_arr):
+                        p_self_cate[index] = np.zeros(max_poi_cate_size, dtype=np.int64)  # Default values
                     else:
-                        i_self_cate[index] = poi_feature_arr[each_i]
+                        p_self_cate[index] = poi_feature_arr[each_p]
 
                     # Fill one-hop data
-                    i_onehop_id[index] = tmp_one_nei
-                    i_onehop_cate[index] = poi_feature_arr[tmp_one_nei]
+                    p_onehop_id[index] = tmp_one_nei
+                    p_onehop_cate[index] = poi_feature_arr[tmp_one_nei]
                 except Exception as e:
-                    print(f"Error processing poi {each_i}: {e}")
+                    print(f"Error processing poi {each_p}: {e}")
                     continue
 
             for index, each_u in enumerate(u):
@@ -218,26 +218,27 @@ def get_batch_instances(train_list, user_feature_dict, poi_feature_dict, poi_lan
                     print(f"Error processing user {each_u}: {e}")
                     continue
 
-            yield ([u, i, l, u_self_cate, u_onehop_id, u_onehop_cate, i_self_cate, i_onehop_id, i_onehop_cate])
+            yield ([u, p, l, u_self_cate, u_onehop_id, u_onehop_cate, p_self_cate, p_onehop_id, p_onehop_cate])
     return data_generator(train_list)
 
-
+#-----------------------------------------------------------------------------------------------------------------------
 if __name__ == '__main__':
-    """#poi cold start
-    f_info = '../dataset/TKY/UP_information.pkl'
-    f_neighbor = '../dataset/TKY/neighbor_Pcold.pkl'
-    f_train = '../dataset/TKY/Pcold_training.dat'
-    f_test = '../dataset/TKY/Pcold_validation.dat'
-    f_model = '../dataset/TKY/MHGCFrec_Pcold_'
-    mode = 'Pcold'"""
+   #poi cold start
+    f_info = '../dataset/NYC/UP_information.pkl'
+    f_neighbor = '../dataset/NYC/neighbor_Pcold.pkl'
+    f_train = '../dataset/NYC/Pcold_training.dat'
+    f_test = '../dataset/NYC/Pcold_validation.dat'
+    f_model = '../dataset/NYC/MHGCFrec_Pcold_'
+    mode = 'Pcold'
 
-   # user cold start
+
+     """# user cold start
     f_info = '../dataset/NYC/UP_information.pkl'
     f_neighbor = '../dataset/NYC/neighbor_Ucold.pkl'
     f_train = '../dataset/NYC/Ucold_training.dat'
     f_test = '../dataset/NYC/Ucold_validation.dat'
     f_model = '../dataset/NYC/MHGCFrec_Ucold_'
-    mode = 'Ucold'
+    mode = 'Ucold'"""
 
     """# warm start
     f_info = '../dataset/NYC/UP_information.pkl'
@@ -276,17 +277,20 @@ if __name__ == '__main__':
     user_feature_dict = poi_info['user_feature_dict']
     poi_feature_dict = poi_info['poi_feature_dict']
 
+    print(f"mode: {mode}")
+
     train_steps, train_list = get_data_list(f_train, batch_size=FLAGS.batch_size)
     test_steps, test_list = get_data_list(f_test, batch_size=FLAGS.batch_size)
 
-    model = DualGNN(user_num, poi_num, gender_num, age_num, occupation_num, category_num, landmark_num, facility_num, rating_num, location_num, FLAGS.embed_size, FLAGS.attention_size, FLAGS.dropout)
+    model = DualGNN(user_num, poi_num, gender_num, age_num, occupation_num, category_num, landmark_num, facility_num, 
+                    rating_num, location_num, FLAGS.embed_size, FLAGS.attention_size, FLAGS.dropout)
     model.to(device)
 
     loss_function = torch.nn.MSELoss(size_average=False)
     optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=FLAGS.lr, weight_decay=0.001)
 
     writer = SummaryWriter()  # For visualization
-    #f_loss_curve = open('tmp_loss_curve.txt', 'w')
+    f_loss_curve = open('tmp_loss_curve.txt', 'w')
     best_ndcg = 5
 
     count = 0
@@ -321,7 +325,7 @@ if __name__ == '__main__':
                 batch_data[8])[:, :, 15:].to(device)
 
             model.zero_grad()
-            recommendation, recon_loss, kl_loss, adv_loss = model(
+            prediction, recon_loss, kl_loss, adv_loss = model(
                 user, poi, user_self_cate, user_onehop_id, user_onehop_cate, poi_self_cate,
                 poi_self_landmark, poi_self_facility, poi_self_rating, poi_self_location, poi_onehop_id,
                 poi_onehop_cate, poi_onehop_landmark, poi_onehop_facility, poi_onehop_rating, poi_onehop_location,
@@ -329,7 +333,7 @@ if __name__ == '__main__':
             )
 
             label = Variable(label)
-            main_loss = loss_function(recommendation, label)
+            main_loss = loss_function(prediction, label)
             loss = main_loss + FLAGS.vgaean_lambda * (recon_loss + kl_loss) + FLAGS.vgaean_beta * adv_loss
             loss.backward()
             optimizer.step()
@@ -340,6 +344,11 @@ if __name__ == '__main__':
         print(f"Epoch {epoch + 1}/{FLAGS.epochs}, Loss: {tmploss.detach()}, Time: {time.time() - start_time}")
 
         model.eval()
-        test_dataloader = get_batch_instances(test_list, user_feature_dict, poi_feature_dict, poi_landmark_dict, poi_facility_dict, poi_rating_dict, poi_location_dict, batch_size=FLAGS.batch_size, user_nei_dict=user_nei_dict, poi_nei_dict=poi_nei_dict, shuffle=False)
-        avg_recall, avg_ndcg, label_lst, pred_lst = metrics(model, test_dataloader)
-        print(f"Test Recall@10: {avg_recall:.4f}, NDCG@10: {avg_ndcg:.4f}")
+        test_dataloader = get_batch_instances(test_list, user_feature_dict, poi_feature_dict, poi_landmark_dict, 
+                                              poi_facility_dict, poi_rating_dict, poi_location_dict, batch_size=FLAGS.batch_size, 
+                                              user_nei_dict=user_nei_dict, poi_nei_dict=poi_nei_dict, shuffle=False)
+        avg_recalls, avg_ndcgs, label_lst, pred_lst = metrics(model, test_dataloader)
+
+        # Print metrics for all N values
+        for N in [2, 5, 10]:
+            print(f"Recall@{N}: {avg_recalls[N]:.4f}, NDCG@{N}: {avg_ndcgs[N]:.4f}")
