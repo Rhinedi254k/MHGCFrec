@@ -112,19 +112,19 @@ class DualGNN(torch.nn.Module):
 
         def init_weights(m):
             if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform(m.weight)
+                nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
-                    nn.init.constant(m.bias, 0)
+                    nn.init.constant_(m.bias, 0)
 
         self.user_embed = torch.nn.Embedding(self.user_size, self.embed_size)
         self.poi_embed = torch.nn.Embedding(self.poi_size, self.embed_size)
-        nn.init.xavier_uniform(self.user_embed.weight)
-        nn.init.xavier_uniform(self.poi_embed.weight)
+        nn.init.xavier_uniform_(self.user_embed.weight)
+        nn.init.xavier_uniform_(self.poi_embed.weight)
 
         self.user_bias = torch.nn.Embedding(self.user_size, 1)
         self.poi_bias = torch.nn.Embedding(self.poi_size, 1)
-        nn.init.constant(self.user_bias.weight, 0)
-        nn.init.constant(self.poi_bias.weight, 0)
+        nn.init.constant_(self.user_bias.weight, 0)
+        nn.init.constant_(self.poi_bias.weight, 0)
 
         self.miu = torch.nn.Parameter(torch.zeros(1), requires_grad=True)
 
@@ -227,7 +227,7 @@ class DualGNN(torch.nn.Module):
             user_embedding = self.user_embed(torch.autograd.Variable(uids_list))
             poi_embedding = self.poi_embed(torch.autograd.Variable(sids_list))
         if mode == 'Pcold': # POI cold-start
-            user_embedding = self.user_embed(torch.autograd.Variable(upds_list))
+            user_embedding = self.user_embed(torch.autograd.Variable(uids_list))
         if mode == 'Ucold':  # User Cold-start
             poi_embedding = self.poi_embed(torch.autograd.Variable(sids_list))
 
