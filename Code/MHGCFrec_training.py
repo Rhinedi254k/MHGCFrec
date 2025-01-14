@@ -21,7 +21,7 @@ parser.add_argument("--batch_size", default=30, type=int,
 					help="batch size when training.")
 parser.add_argument("--gpu", default="0", type=str,
 					help="gpu card ID.")
-parser.add_argument("--epochs", default=3, type=str,
+parser.add_argument("--epochs", default=20, type=str,
 					help="training epoches.")
 parser.add_argument("--clip_norm", default=5.0, type=float,
 					help="clip norm for preventing gradient exploding.")
@@ -114,7 +114,7 @@ def get_data_list(ftrain, batch_size):
     num_batches_per_epoch = int((len(train_list) - 1) / batch_size) + 1
     return num_batches_per_epoch, train_list
 
-def get_batch_instances(train_list, user_feature_dict, poi_feature_dict, poi_landmark_dict, poi_facility_dict,
+def get_batch_instances(train_list, user_feature_dict, poi_feature_dict, poi_landmark_dict, poi_facility_dict, 
                         poi_rating_dict, poi_location_dict, batch_size, user_nei_dict, poi_nei_dict, shuffle=True):
     num_batches_per_epoch = int((len(train_list) - 1) / batch_size) + 1
 
@@ -282,7 +282,7 @@ if __name__ == '__main__':
     train_steps, train_list = get_data_list(f_train, batch_size=FLAGS.batch_size)
     test_steps, test_list = get_data_list(f_test, batch_size=FLAGS.batch_size)
 
-    model = DualGNN(user_num, poi_num, gender_num, age_num, occupation_num, category_num, landmark_num, facility_num,
+    model = DualGNN(user_num, poi_num, gender_num, age_num, occupation_num, category_num, landmark_num, facility_num, 
                     rating_num, location_num, FLAGS.embed_size, FLAGS.attention_size, FLAGS.dropout)
     model.to(device)
 
@@ -344,8 +344,8 @@ if __name__ == '__main__':
         print(f"Epoch {epoch + 1}/{FLAGS.epochs}, Loss: {tmploss.detach()}, Time: {time.time() - start_time}")
 
         model.eval()
-        test_dataloader = get_batch_instances(test_list, user_feature_dict, poi_feature_dict, poi_landmark_dict,
-                                              poi_facility_dict, poi_rating_dict, poi_location_dict, batch_size=FLAGS.batch_size,
+        test_dataloader = get_batch_instances(test_list, user_feature_dict, poi_feature_dict, poi_landmark_dict, 
+                                              poi_facility_dict, poi_rating_dict, poi_location_dict, batch_size=FLAGS.batch_size, 
                                               user_nei_dict=user_nei_dict, poi_nei_dict=poi_nei_dict, shuffle=False)
         avg_recalls, avg_ndcgs, label_lst, pred_lst = metrics(model, test_dataloader)
 
