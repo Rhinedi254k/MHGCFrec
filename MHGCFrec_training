@@ -21,7 +21,7 @@ parser.add_argument("--batch_size", default=30, type=int,
 					help="batch size when training.")
 parser.add_argument("--gpu", default="0", type=str,
 					help="gpu card ID.")
-parser.add_argument("--epochs", default=3, type=str,
+parser.add_argument("--epochs", default=20, type=str,
 					help="training epoches.")
 parser.add_argument("--clip_norm", default=5.0, type=float,
 					help="clip norm for preventing gradient exploding.")
