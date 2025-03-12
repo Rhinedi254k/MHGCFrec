@@ -1,6 +1,7 @@
 # MHGCFrec
 
 Paper tittle "A Multiplex Hypergraph Attribute-based Graph Collaborative Filtering for Cold-start POI Recommendation".
+DOI:https://doi.org/10.1109/TBDATA.2025.3533908
 
 # Requirements
 
