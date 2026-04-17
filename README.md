@@ -1,6 +1,6 @@
 # MHGCFrec
 
-S. N. Anjiri, D. Ding, Y. Song and Y. Sun, "A Multiplex Hypergraph Attribute-based Graph Collaborative Filtering for Cold-start POI Recommendation," in IEEE Transactions on Big Data, doi: https://doi.org/10.1109/TBDATA.2025.3533908.
+S. N. Anjiri, D. Ding, Y. Song and Y. Sun, "A Multiplex Hypergraph Attribute-Based Graph Collaborative Filtering for Cold-Start POI Recommendation," in IEEE Transactions on Big Data, vol. 11, no. 5, pp. 2401-2416, doi: https://doi.org/10.1109/TBDATA.2025.3533908.
 
 # Requirements
 
